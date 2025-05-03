@@ -243,6 +243,7 @@
         const square = turf.polygon([[corner1, corner2, corner3, corner4, corner1]]);
         const hasConflictWithBoudary = !currentInnerBoundary || !turf.booleanWithin(square, currentInnerBoundary)
         if (hasConflictWithBoudary) {
+          shiftClickPoints = [];
           showTemporaryMessage("❌ Square must be entirely within the boundary buffer area.");
           return;
         }
@@ -251,6 +252,7 @@
           !turf.booleanDisjoint(buffer, square)
         );
         if (hasConflictWithBuilding) {
+          shiftClickPoints = [];
           showTemporaryMessage("❌ Square cannot touch building buffer zones.");
           return;
         }
@@ -272,10 +274,12 @@
         }).addTo(map);
 
         showTemporaryMessage("Square added. Click the 'X' to remove it.");
+        shiftClickPoints = [];
 
         deleteMarker.on('click', () => {
           map.removeLayer(boxLayer);
           map.removeLayer(deleteMarker);
+          shiftClickPoints = [];
           showTemporaryMessage("Square removed.");
         });
       }
@@ -289,7 +293,7 @@
       bar._hideTimer = setTimeout(() => {
         bar.style.display = "none";
         bar.innerHTML = "";
-      }, 5000);
+      }, 3000);
     }
   </script>
 </body>
