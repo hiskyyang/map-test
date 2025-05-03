@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Validated Square in Boundary</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+    }
+
+    #map {
+      height: 600px;
+      width: 100%;
+    }
+
+    #searchBox {
+      position: absolute;
+      top: 10px;
+      left: 100px;
+      z-index: 1001;
+      background: white;
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 0 8px rgba(0, 0, 0, 0.2);
+    }
+
+    #searchBox input {
+      width: 200px;
+    }
+
+    #messageBar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.75);
+      color: white;
+      text-align: center;
+      padding: 6px;
+      font-size: 14px;
+      z-index: 1002;
+      display: none;
+    }
+
+    .delete-btn {
+      background: red;
+      color: white;
+      font-size: 12px;
+      padding: 0 4px;
+      border-radius: 50%;
+      cursor: pointer;
+      user-select: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="messageBar"></div>
+  <div id="searchBox">
+    <input type="text" id="address" value="2/2 School Road" />
+    <button onclick="searchAddress()">Search</button>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    const map = L.map('map').setView([-36.8071280, 174.7901840], 19);
+    const boundaryColor = "green";
+    const buildingColor = "grey";
+    const innerBoundaryColor = "red";
+    let squarBorder = 5;
+
+    let boundaryLayer = null;
+    let innerBoundaryLayer = null;
+    let buildingLayer = null;
+    let buildingBufferLayer = null;
+
+    let cachedBoundaryData = null;
+    let cachedBuildingData = null;
+    let currentInnerBoundary = null;
+    let currentBuildingBuffers = [];
+
+    let shiftClickPoints = [];
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19
+    }).addTo(map);
+
+    function fetchShapefile(url) {
+      return shp(url)
+        .then(geojson => {
+          if (!geojson) return [];
+          return Array.isArray(geojson)
+            ? geojson.reduce((acc, fc) => (fc && fc.features ? acc.concat(fc.features) : acc), [])
+            : geojson.features || [];
+        });
+    }
+
+    function fetchBoundaryData() {
+      if (cachedBoundaryData) return Promise.resolve(cachedBoundaryData);
+      return fetchShapefile("/data/boundary2.zip").then(data => {
+        cachedBoundaryData = data;
+        return data;
+      });
+    }
+
+    function fetchBuildingData() {
+      if (cachedBuildingData) return Promise.resolve(cachedBuildingData);
+      return fetchShapefile("/data/building.zip").then(data => {
+        cachedBuildingData = data;
+        return data;
+      });
+    }
+
+    function searchAddress() {
+      const address = document.getElementById('address').value;
+      if (!address) return;
+      const url = `https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&q=${encodeURIComponent(address)}`;
+      fetch(url).then(res => res.json()).then(data => {
+        if (!data || !data.length) {
+          showTemporaryMessage("No matching location found.");
+          return;
+        }
+
+        const { lat, lon, display_name } = data[0];
+        const point = L.latLng(parseFloat(lat), parseFloat(lon));
+        map.setView(point, 19);
+        drawBoundary(parseFloat(lat), parseFloat(lon));
+        drawBuilding(parseFloat(lat), parseFloat(lon));
+        showTemporaryMessage(`<strong>${display_name}</strong>`);
+      });
+    }
+
+    function drawBoundary(lat, lon) {
+      fetchBoundaryData().then(boundaryData => {
+        if (boundaryLayer) map.removeLayer(boundaryLayer);
+        if (innerBoundaryLayer) map.removeLayer(innerBoundaryLayer);
+
+        const point = turf.point([lon, lat]);
+        const matched = boundaryData.find(feature =>
+          turf.booleanPointInPolygon(point, feature)
+        );
+
+        if (!matched) {
+          showTemporaryMessage("No boundary found at this location.");
+          return;
+        }
+
+
+        boundaryLayer = L.geoJSON(matched, {
+          style: {
+            color: boundaryColor,
+            weight: 1,
+            fillOpacity: 0.5
+          }
+        }).addTo(map);
+
+        currentInnerBoundary = turf.buffer(matched, -0.001, { units: 'kilometers' });
+        innerBoundaryLayer = L.geoJSON(currentInnerBoundary, {
+          style: {
+            color: innerBoundaryColor,
+            weight: 1,
+            dashArray: "4, 4",
+            fillOpacity: 0
+          }
+        }).addTo(map);
+
+      });
+    }
+
+    function drawBuilding(lat, lon) {
+      fetchBuildingData().then(features => {
+        if (buildingLayer) map.removeLayer(buildingLayer);
+        if (buildingBufferLayer) map.removeLayer(buildingBufferLayer);
+
+        const pt = turf.point([lon, lat]);
+        const matched = getPointInPolygon(features, pt);
+
+        if (!matched.length) {
+          showTemporaryMessage("No building found at this location.");
+          return;
+        }
+
+        buildingLayer = L.geoJSON(matched, {
+          style: {
+            color: "darkgrey",
+            weight: 1,
+            fillColor: buildingColor,
+            fillOpacity: 1
+          }
+        }).addTo(map);
+
+        const buffers = matched.map(f => turf.buffer(f, 0.001, { units: 'kilometers' }));
+        currentBuildingBuffers = buffers;
+
+        buildingBufferLayer = L.geoJSON(turf.featureCollection(buffers), {
+          style: {
+            color: innerBoundaryColor,
+            weight: 1,
+            dashArray: "4,4",
+            fillOpacity: 0
+          }
+        }).addTo(map);
+      });
+    }
+
+    function getPointInPolygon(features, point) {
+      return features.filter(feature => {
+        const { geometry } = feature;
+        return geometry &&
+          ["Polygon", "MultiPolygon"].includes(geometry.type) &&
+          Array.isArray(geometry.coordinates) &&
+          geometry.coordinates.length > 0 &&
+          turf.booleanPointInPolygon(point, feature);
+      });
+    }
+
+    map.on("mousedown", function (e) {
+      if (!e.originalEvent.shiftKey || e.originalEvent.button !== 0) return;
+
+      shiftClickPoints.push(e.latlng);
+
+      if (shiftClickPoints.length === 2) {
+        const [p1, p2] = shiftClickPoints;
+        shiftClickPoints = [];
+
+        const pt1 = turf.point([p1.lng, p1.lat]);
+        const angle = turf.bearing(pt1, turf.point([p2.lng, p2.lat]));
+        const sideLength = squarBorder / 1000;
+
+        const corner1 = pt1.geometry.coordinates;
+        const corner2 = turf.destination(pt1, sideLength, angle, { units: 'kilometers' }).geometry.coordinates;
+        const corner3 = turf.destination(turf.point(corner2), sideLength, angle + 90, { units: 'kilometers' }).geometry.coordinates;
+        const corner4 = turf.destination(pt1, sideLength, angle + 90, { units: 'kilometers' }).geometry.coordinates;
+
+        const square = turf.polygon([[corner1, corner2, corner3, corner4, corner1]]);
+        const hasConflictWithBoudary = !currentInnerBoundary || !turf.booleanWithin(square, currentInnerBoundary)
+        if (hasConflictWithBoudary) {
+          showTemporaryMessage("❌ Square must be entirely within the boundary buffer area.");
+          return;
+        }
+
+        const hasConflictWithBuilding = currentBuildingBuffers.some(buffer =>
+          !turf.booleanDisjoint(buffer, square)
+        );
+        if (hasConflictWithBuilding) {
+          showTemporaryMessage("❌ Square cannot touch building buffer zones.");
+          return;
+        }
+
+        const boxLayer = L.geoJSON(square, {
+          style: {
+            color: "gold",
+            fillColor: "yellow",
+            weight: 1,
+            fillOpacity: 0.5
+          }
+        }).addTo(map);
+
+        const deleteMarker = L.marker([p2.lat, p2.lng], {
+          icon: L.divIcon({
+            className: '',
+            html: '<div>X</div>'
+          })
+        }).addTo(map);
+
+        showTemporaryMessage("Square added. Click the 'X' to remove it.");
+
+        deleteMarker.on('click', () => {
+          map.removeLayer(boxLayer);
+          map.removeLayer(deleteMarker);
+          showTemporaryMessage("Square removed.");
+        });
+      }
+    });
+
+    function showTemporaryMessage(message) {
+      const bar = document.getElementById("messageBar");
+      bar.innerHTML = message;
+      bar.style.display = "block";
+      clearTimeout(bar._hideTimer);
+      bar._hideTimer = setTimeout(() => {
+        bar.style.display = "none";
+        bar.innerHTML = "";
+      }, 5000);
+    }
+  </script>
+</body>
+
+</html>
